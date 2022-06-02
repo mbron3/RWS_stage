@@ -1,0 +1,115 @@
+Map.setCenter(5.070046967706845, 52.065555169101216, 15);
+function maskS2clouds(image) {
+  var qa = image.select('QA60');
+  // Bits 10 and 11 are clouds and cirrus, respectively.
+  var cloudBitMask = 1 << 10;
+  var cirrusBitMask = 1 << 11;
+  // Both flags should be set to zero, indicating clear conditions.
+  var mask = qa.bitwiseAnd(cloudBitMask).eq(0)
+      .and(qa.bitwiseAnd(cirrusBitMask).eq(0));
+  return image.updateMask(mask).divide(10000);}
+
+var img_sentinel = ee.ImageCollection('COPERNICUS/S2_SR')
+                  .filterDate('2021-08-01', '2021-09-30')
+                  // Pre-filter to get less cloudy granules.
+                  .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE',20))
+                  .map(maskS2clouds)
+                  .filterBounds(geometry8)
+                  .mosaic()
+                  .select('B.*');
+
+// Use these bands for prediction.
+var bands_sentinel = ['B2', 'B3', 'B4'];//, 'B5',
+             //'B6', 'B7', 'B8', 'B9', 'B11'];
+
+// Manually created polygons.
+var road1 = geometry;
+var road2 = geometry2;
+var road3 = geometry6;
+var nonroad1 = geometry3;
+var nonroad2 = geometry4;
+var nonroad3 = geometry7;
+
+// Make a FeatureCollection from the hand-made geometries.
+var polygons = ee.FeatureCollection([
+  ee.Feature(nonroad1, {'class': 0}),
+  ee.Feature(nonroad2, {'class': 0}),
+  ee.Feature(nonroad3, {'class': 0}),
+  ee.Feature(road1, {'class': 1}),
+  ee.Feature(road2, {'class': 1}),
+  ee.Feature(road3, {'class': 1}),
+]);
+
+// Get the values for all pixels in each polygon in the training.
+var training_sentinel = img_sentinel.sampleRegions({
+  // Get the sample from the polygons FeatureCollection.
+  collection: polygons,
+  // Keep this list of properties from the polygons.
+  properties: ['class'],
+  scale: 4
+});
+
+// Add a random value field to the sample and use it to approximately split 80%
+// of the features into a training set and 20% into a validation set.
+var sample_sentinel = training_sentinel.randomColumn();
+var trainingSample_sentinel = sample_sentinel.filter('random <= 0.8');
+var validationSample_sentinel = sample_sentinel.filter('random > 0.8');
+
+// Train a 10-tree random forest classifier from the training sample.
+var trainedClassifier = ee.Classifier.smileRandomForest(2).train({
+  features: trainingSample_sentinel,
+  classProperty: 'class',
+  inputProperties: bands_sentinel
+});
+
+// Get information about the trained classifier.
+print('Results of trained classifier sentinel', trainedClassifier.explain());
+
+// Get a confusion matrix and overall accuracy for the training sample.
+var trainAccuracy_sentinel = trainedClassifier.confusionMatrix();
+print('Training error matrix sentinel', trainAccuracy_sentinel);
+print('Training overall accuracy sentinel', trainAccuracy_sentinel.accuracy());
+
+// Get a confusion matrix and overall accuracy for the validation sample.
+validationSample_sentinel = validationSample_sentinel.classify(trainedClassifier);
+var validationAccuracy_sentinel = validationSample_sentinel.errorMatrix('class', 'classification');
+print('Validation error matrix sentinel', validationAccuracy_sentinel);
+print('Validation accuracy sentinel', validationAccuracy_sentinel.accuracy());
+
+// Classify the reflectance image from the trained classifier.
+var sentinelClassified = img_sentinel.classify(trainedClassifier);
+
+// Add the layers to the map.
+var classVis = {
+  min: 0,
+  max: 1,
+  palette: ['006400', 'ffbb22']
+};
+
+var kernel = ee.Kernel.square({radius: 1});
+
+var sentinel_roads = sentinelClassified.updateMask(sentinelClassified.eq(1)).clip(geometry8);
+var kernel = ee.Kernel.square({radius: 1});
+var sentinelweg_gevuld = sentinelClassified.focal_max({kernel: kernel, iterations: 4}).focal_min({kernel: kernel, iterations: 4}).clip(geometry8);
+var sentinel_roads2 = sentinelweg_gevuld.updateMask(sentinelweg_gevuld.eq(1));
+Map.addLayer(sentinelweg_gevuld, classVis, 'sentinelweg_gevuld', false);
+Map.addLayer(sentinelClassified, classVis, 'sentinel_Classified', false);
+Map.addLayer(img_sentinel, {bands: ['B2', 'B3', 'B4'], min: 0, max: 0.1, gamma: 1}, 'Sentinel', false);
+Map.addLayer(sentinel_roads, classVis, 'sentinelweg_ongevuld', false);
+Map.addLayer(sentinel_roads2, classVis, 'sentinelweg_gevuld', false);
+
+var shp_voorbereiding = sentinel_roads2.reduceToVectors({
+  reducer: ee.Reducer.countEvery(), 
+  geometry: geometry8, 
+  scale: 2,
+  maxPixels: 12000000
+});
+
+// Export to a SHP file.
+Export.table.toDrive({
+  collection: shp_voorbereiding,
+  description:'sentinelweg_gevuld',
+  fileFormat: 'SHP'
+});
+
+Map.addLayer(shp_voorbereiding, {}, 'sentinelweg_gevuld_shp', false); 
