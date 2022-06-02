@@ -1,0 +1,105 @@
+Map.setCenter(5.070046967706845, 52.065555169101216, 15);
+
+function maskS2clouds(image) {
+  var qa = image.select('QA60');
+  // Bits 10 and 11 are clouds and cirrus, respectively.
+  var cloudBitMask = 1 << 10;
+  var cirrusBitMask = 1 << 11;
+  // Both flags should be set to zero, indicating clear conditions.
+  var mask = qa.bitwiseAnd(cloudBitMask).eq(0)
+      .and(qa.bitwiseAnd(cirrusBitMask).eq(0));
+  return image.updateMask(mask).divide(10000);}
+
+var img_sentinel = ee.ImageCollection('COPERNICUS/S2_SR')
+                  .filterDate('2021-07-01', '2021-08-30')
+                  // Pre-filter to get less cloudy granules.
+                  .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE',20))
+                  .map(maskS2clouds)
+                  .filterBounds(geometry5)
+                  .mosaic()
+                  .select('B.*');
+var img_ortho = ee.Image("users/thesisdvanderh/Clip_True_Ortho")
+
+// Use these bands for prediction.
+var bands_sentinel = ['B2', 'B3', 'B4'];//, 'B5', 'B6', 'B7', 'B8', 'B9', 'B11'];
+var bands = ['b2', 'b3', 'b1']; 
+
+// Manually created polygons.
+var road1 = geometry;
+var road2 = geometry2;
+var road3 = geometry6;
+var nonroad1 = geometry3;
+var nonroad2 = geometry4;
+var nonroad3 = geometry7;
+
+// Make a FeatureCollection from the hand-made geometries.
+var polygons = ee.FeatureCollection([
+  ee.Feature(nonroad1, {'class': 0}),
+  ee.Feature(nonroad2, {'class': 0}),
+  ee.Feature(nonroad3, {'class': 0}),
+  ee.Feature(road1, {'class': 1}),
+  ee.Feature(road2, {'class': 1}),
+  ee.Feature(road3, {'class': 1}),
+]);
+
+// Get the values for all pixels in each polygon in the training.
+var training_sentinel = img_sentinel.sampleRegions({
+  // Get the sample from the polygons FeatureCollection.
+  collection: polygons,
+  // Keep this list of properties from the polygons.
+  properties: ['class'],
+  // Set the scale to get Landsat pixels in the polygons.
+  scale: 6});
+  
+var training_ortho = img_ortho.sampleRegions({
+  collection: polygons,
+  properties: ['class'],
+  scale: 6});
+
+// Create an SVM classifier with custom parameters.
+var classifier_sentinel = ee.Classifier.libsvm({
+  kernelType: 'RBF',
+  gamma: 0.5,
+  cost: 5});
+
+var classifier_ortho = ee.Classifier.libsvm({
+  kernelType: 'RBF',
+  gamma: 0.5,
+  cost: 5});
+
+// Train the classifier.
+var trainedClassifier_sentinel = classifier_sentinel.train(training_sentinel, 'class', bands_sentinel);
+var trainedClassifier_ortho = classifier_ortho.train(training_ortho, 'class', bands);
+
+// Classify the image.
+var sentinelClassified = img_sentinel.classify(trainedClassifier_sentinel);
+var orthoClassified = img_ortho.classify(trainedClassifier_ortho);
+
+// Get a confusion matrix and overall accuracy for the training sample.
+var trainAccuracy_sentinel = trainedClassifier_sentinel.confusionMatrix();
+print('Training error matrix sentinel', trainAccuracy_sentinel)
+print('Training overall accuracy sentinel', trainAccuracy_sentinel.accuracy());
+
+var trainAccuracy_ortho = trainedClassifier_ortho.confusionMatrix();
+print('Training error matrix ortho', trainAccuracy_ortho)
+print('Training overall accuracy ortho', trainAccuracy_ortho.accuracy());
+
+var kernel = ee.Kernel.square({radius: 1});
+
+var sentinel_roads = sentinelClassified.focal_max({kernel: kernel, iterations: 4}).focal_min({kernel: kernel, iterations: 4}).clip(geometry5);
+var sentinelweg_gevuld = sentinelClassified.focal_max({kernel: kernel, iterations: 4}).focal_min({kernel: kernel, iterations: 4}).clip(geometry5);
+var sentinel_roads2 = sentinelweg_gevuld.updateMask(sentinelweg_gevuld.eq(1));
+Map.addLayer(sentinelweg_gevuld, {min: 0, max: 1, palette: ['orange', '1500ff']}, 'sentinelweg_gevuld', false);
+Map.addLayer(sentinel_roads, {min: 0, max: 1, palette: ['orange', '1500ff']}, 'sentinelweg_ongevuld', false);
+Map.addLayer(sentinel_roads2, {min: 0, max: 1, palette: ['orange', '1500ff']}, 'sentinelweg_gevuld', false);
+Map.addLayer(img_sentinel, {bands: ['B4', 'B3', 'B2'], min: 0, max: 1}, 'Sentinel', false);
+Map.addLayer(sentinelClassified, {min: 0, max: 1, palette: ['orange', '1500ff']}, 'sentinelClassified', false);
+
+var ortho_roads = orthoClassified.updateMask(orthoClassified.eq(1));
+var orthoweg_gevuld = orthoClassified.focal_max({kernel: kernel, iterations: 3}).focal_min({kernel: kernel, iterations: 3});
+var ortho_roads2 = orthoweg_gevuld.updateMask(orthoweg_gevuld.eq(1));
+Map.addLayer(orthoweg_gevuld, {min: 0, max: 1, palette: ['orange', '1500ff']}, 'orthoweg_gevuld', false);
+Map.addLayer(ortho_roads, {min: 0, max: 1, palette: ['orange', '1500ff']}, 'orthoweg_ongevuld', false);
+Map.addLayer(ortho_roads2, {min: 0, max: 1, palette: ['orange', '1500ff']}, 'orthoweg_gevuld', false);
+Map.addLayer(img_ortho, {bands: ['b1', 'b2', 'b3'], min: 0, max: 100}, 'Ortho', false);
+Map.addLayer(orthoClassified, {min: 0, max: 1, palette: ['orange', '1500ff']}, 'ortho_Classified', false);
