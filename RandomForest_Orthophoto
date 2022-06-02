@@ -1,0 +1,78 @@
+Map.setCenter(5.070046967706845, 52.065555169101216, 15);
+var img_ortho = ee.Image("users/thesisdvanderh/Clip_True_Ortho");
+var bands_ortho = ['b2', 'b3', 'b1'];
+
+// Manually created polygons.
+var road1 = geometry;
+var road2 = geometry2;
+var road3 = geometry6;
+var nonroad1 = geometry3;
+var nonroad2 = geometry4;
+var nonroad3 = geometry7;
+
+// Make a FeatureCollection from the hand-made geometries.
+var polygons = ee.FeatureCollection([
+  ee.Feature(nonroad1, {'class': 0}),
+  ee.Feature(nonroad2, {'class': 0}),
+  ee.Feature(nonroad3, {'class': 0}),
+  ee.Feature(road1, {'class': 1}),
+  ee.Feature(road2, {'class': 1}),
+  ee.Feature(road3, {'class': 1}),
+]);
+
+// Get the values for all pixels in each polygon in the training.
+var training_ortho = img_ortho.sampleRegions({
+  // Get the sample from the polygons FeatureCollection.
+  collection: polygons,
+  // Keep this list of properties from the polygons.
+  properties: ['class'],
+  // Set the scale to get Landsat pixels in the polygons.
+  scale: 6
+});
+
+// Add a random value field to the sample and use it to approximately split 80%
+// of the features into a training set and 20% into a validation set.
+var sample_ortho = training_ortho.randomColumn();
+var trainingSample_ortho = sample_ortho.filter('random <= 0.8');
+var validationSample_ortho = sample_ortho.filter('random > 0.8');
+
+// Train a 10-tree random forest classifier from the training sample.
+var trainedClassifier_ortho = ee.Classifier.smileRandomForest(2).train({
+  features: trainingSample_ortho,
+  classProperty: 'class',
+  inputProperties: bands_ortho
+});
+
+// Get information about the trained classifier.
+print('Results of trained classifier ortho', trainedClassifier_ortho.explain());
+
+// Get a confusion matrix and overall accuracy for the training sample.
+var trainAccuracy_ortho = trainedClassifier_ortho.confusionMatrix();
+print('Training error matrix ortho', trainAccuracy_ortho);
+print('Training overall accuracy ortho', trainAccuracy_ortho.accuracy());
+
+// Get a confusion matrix and overall accuracy for the validation sample.
+validationSample_ortho = validationSample_ortho.classify(trainedClassifier_ortho);
+var validationAccuracy_ortho = validationSample_ortho.errorMatrix('class', 'classification');
+print('Validation error matrix ortho', validationAccuracy_ortho);
+print('Validation accuracy ortho', validationAccuracy_ortho.accuracy());
+
+// Classify the reflectance image from the trained classifier.
+var orthoClassified = img_ortho.classify(trainedClassifier_ortho);
+
+// Add the layers to the map.
+var classVis = {
+  min: 0,
+  max: 1,
+  palette: ['006400', 'ffbb22']
+};
+
+var ortho_roads = orthoClassified.updateMask(orthoClassified.eq(1));
+var kernel = ee.Kernel.square({radius: 1});
+var orthoweg_gevuld = orthoClassified.focal_max({kernel: kernel, iterations: 4}).focal_min({kernel: kernel, iterations: 4});
+var ortho_roads2 = orthoweg_gevuld.updateMask(orthoweg_gevuld.eq(1));
+Map.addLayer(orthoweg_gevuld, classVis, 'orthoweg_gevuld'), false;
+Map.addLayer(orthoClassified, classVis, 'ortho_Classified', false);
+Map.addLayer(img_ortho, null, 'Ortho', false);
+Map.addLayer(ortho_roads, classVis, 'orthoweg_ongevuld', false);
+Map.addLayer(ortho_roads2, classVis, 'orthoweg_gevuld', false);
