@@ -1,5 +1,27 @@
 Map.setCenter(5.070046967706845, 52.065555169101216, 15);
+
+function maskS2clouds(image) {
+  var qa = image.select('QA60');
+  // Bits 10 and 11 are clouds and cirrus, respectively.
+  var cloudBitMask = 1 << 10;
+  var cirrusBitMask = 1 << 11;
+  // Both flags should be set to zero, indicating clear conditions.
+  var mask = qa.bitwiseAnd(cloudBitMask).eq(0)
+      .and(qa.bitwiseAnd(cirrusBitMask).eq(0));
+  return image.updateMask(mask).divide(10000);}
+
+var img_sentinel = ee.ImageCollection('COPERNICUS/S2_SR')
+                  .filterDate('2021-08-01', '2021-09-30')
+                  // Pre-filter to get less cloudy granules.
+                  .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE',20))
+                  .map(maskS2clouds)
+                  .filterBounds(geometry8)
+                  .mosaic()
+                  .select('B.*');
 var img_ortho = ee.Image("users/thesisdvanderh/Clip_True_Ortho");
+
+// Use these bands for prediction.
+var bands_sentinel = ['B2', 'B3', 'B4'];//, 'B5', 'B6', 'B7', 'B8', 'B9', 'B11'];
 var bands_ortho = ['b2', 'b3', 'b1'];
 
 // Manually created polygons.
@@ -21,43 +43,65 @@ var polygons = ee.FeatureCollection([
 ]);
 
 // Get the values for all pixels in each polygon in the training.
-var training_ortho = img_ortho.sampleRegions({
+var training_sentinel = img_sentinel.sampleRegions({
   // Get the sample from the polygons FeatureCollection.
   collection: polygons,
   // Keep this list of properties from the polygons.
   properties: ['class'],
-  // Set the scale to get Landsat pixels in the polygons.
-  scale: 6
-});
+  scale: 4});
+
+var training_ortho = img_ortho.sampleRegions({
+  collection: polygons,
+  properties: ['class'],
+  scale: 6});
 
 // Add a random value field to the sample and use it to approximately split 80%
 // of the features into a training set and 20% into a validation set.
+var sample_sentinel = training_sentinel.randomColumn();
+var trainingSample_sentinel = sample_sentinel.filter('random <= 0.8');
+var validationSample_sentinel = sample_sentinel.filter('random > 0.8');
+
 var sample_ortho = training_ortho.randomColumn();
 var trainingSample_ortho = sample_ortho.filter('random <= 0.8');
 var validationSample_ortho = sample_ortho.filter('random > 0.8');
 
 // Train a 10-tree random forest classifier from the training sample.
+var trainedClassifier = ee.Classifier.smileRandomForest(2).train({
+  features: trainingSample_sentinel,
+  classProperty: 'class',
+  inputProperties: bands_sentinel});
+
 var trainedClassifier_ortho = ee.Classifier.smileRandomForest(2).train({
   features: trainingSample_ortho,
   classProperty: 'class',
-  inputProperties: bands_ortho
-});
+  inputProperties: bands_ortho});
 
 // Get information about the trained classifier.
+print('Results of trained classifier sentinel', trainedClassifier.explain());
 print('Results of trained classifier ortho', trainedClassifier_ortho.explain());
 
 // Get a confusion matrix and overall accuracy for the training sample.
+var trainAccuracy_sentinel = trainedClassifier.confusionMatrix();
+print('Training error matrix sentinel', trainAccuracy_sentinel);
+print('Training overall accuracy sentinel', trainAccuracy_sentinel.accuracy());
+
 var trainAccuracy_ortho = trainedClassifier_ortho.confusionMatrix();
 print('Training error matrix ortho', trainAccuracy_ortho);
 print('Training overall accuracy ortho', trainAccuracy_ortho.accuracy());
 
 // Get a confusion matrix and overall accuracy for the validation sample.
+validationSample_sentinel = validationSample_sentinel.classify(trainedClassifier);
+var validationAccuracy_sentinel = validationSample_sentinel.errorMatrix('class', 'classification');
+print('Validation error matrix sentinel', validationAccuracy_sentinel);
+print('Validation accuracy sentinel', validationAccuracy_sentinel.accuracy());
+
 validationSample_ortho = validationSample_ortho.classify(trainedClassifier_ortho);
 var validationAccuracy_ortho = validationSample_ortho.errorMatrix('class', 'classification');
 print('Validation error matrix ortho', validationAccuracy_ortho);
 print('Validation accuracy ortho', validationAccuracy_ortho.accuracy());
 
 // Classify the reflectance image from the trained classifier.
+var sentinelClassified = img_sentinel.classify(trainedClassifier);
 var orthoClassified = img_ortho.classify(trainedClassifier_ortho);
 
 // Add the layers to the map.
@@ -67,12 +111,38 @@ var classVis = {
   palette: ['006400', 'ffbb22']
 };
 
-var ortho_roads = orthoClassified.updateMask(orthoClassified.eq(1));
 var kernel = ee.Kernel.square({radius: 1});
+
+var sentinel_roads = sentinelClassified.updateMask(sentinelClassified.eq(1)).clip(geometry8);
+var sentinelweg_gevuld = sentinelClassified.focal_max({kernel: kernel, iterations: 4}).focal_min({kernel: kernel, iterations: 4}).clip(geometry8);
+var sentinel_roads2 = sentinelweg_gevuld.updateMask(sentinelweg_gevuld.eq(1));
+Map.addLayer(sentinelweg_gevuld, classVis, 'sentinelweg_gevuld', false);
+Map.addLayer(sentinelClassified, classVis, 'sentinel_Classified', false);
+Map.addLayer(img_sentinel, {bands: ['B2', 'B3', 'B4'], min: 0, max: 0.1, gamma: 1}, 'Sentinel', false);
+Map.addLayer(sentinel_roads, classVis, 'sentinelweg_ongevuld', false);
+Map.addLayer(sentinel_roads2, classVis, 'sentinelweg_gevuld', false);
+
+var ortho_roads = orthoClassified.updateMask(orthoClassified.eq(1));
 var orthoweg_gevuld = orthoClassified.focal_max({kernel: kernel, iterations: 4}).focal_min({kernel: kernel, iterations: 4});
 var ortho_roads2 = orthoweg_gevuld.updateMask(orthoweg_gevuld.eq(1));
-Map.addLayer(orthoweg_gevuld, classVis, 'orthoweg_gevuld'), false;
+Map.addLayer(orthoweg_gevuld, classVis, 'orthoweg_gevuld', false);
 Map.addLayer(orthoClassified, classVis, 'ortho_Classified', false);
 Map.addLayer(img_ortho, null, 'Ortho', false);
 Map.addLayer(ortho_roads, classVis, 'orthoweg_ongevuld', false);
 Map.addLayer(ortho_roads2, classVis, 'orthoweg_gevuld', false);
+
+var shp_voorbereiding = sentinel_roads2.reduceToVectors({
+  reducer: ee.Reducer.countEvery(), 
+  geometry: geometry8, 
+  scale: 2,
+  maxPixels: 12000000
+});
+
+// Export to a SHP file.
+Export.table.toDrive({
+  collection: shp_voorbereiding,
+  description:'sentinelweg_gevuld',
+  fileFormat: 'SHP'
+});
+
+Map.addLayer(shp_voorbereiding, {}, 'sentinelweg_gevuld_shp', false); 
