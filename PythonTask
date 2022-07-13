@@ -1,0 +1,70 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Fri Feb 18 15:57:00 2022
+
+@author: Datalab cursus
+"""
+
+import ezdxf
+
+doc = ezdxf.new('R2010') # create a new DXF drawing in R2010 fromat
+msp = doc.modelspace() # create a new modelspace in which the lines, circles and text will be added
+input_letter = "H"
+
+#def DXFcreatorLine(input_letter, doc):
+msp.add_line((0, 0), (10, 0), dxfattribs={"layer": "TEXTLAYER"}) # add a LINE entity 
+   
+if input_letter == "H" :#or input_letter == "K" or input_letter == "X":
+        doc.layers.add("TEXTLAYER", dxfattribs={"color": 1})#, color = 'b')#doc.layers.add("TEXTLAYER", color=1)
+elif input_letter == "S" :#or input_letter == "T":
+        doc.layers.add("TEXTLAYER", dxfattribs={"color": 2})
+#      elif input_letter in "L":
+#          doc.layers.add("TEXTLAYER", color=3)
+#      elif input_letter in "B" or input_letter in "C":
+#          doc.layers.add("TEXTLAYER", color=4)
+#      elif input_letter in "D" or input_letter in "E"or input_letter in "F":
+#          doc.layers.add("TEXTLAYER", color=5)
+#      elif input_letter in "Y":
+#        doc.layers.add("TEXTLAYER", color=6)
+#      elif input_letter in "A":
+#        doc.layers.add("TEXTLAYER", color=7)
+#      elif input_letter in "U":
+#        doc.layers.add("TEXTLAYER", color=8)
+#      elif input_letter in "_":
+#        if input_letter in "_R":
+#          doc.layers.add("TEXTLAYER", color=1)
+#        elif input_letter in "_G":
+#          doc.layers.add("TEXTLAYER", color=3)
+#        elif input_letter in "_Y":
+#          doc.layers.add("TEXTLAYER", color=6)
+#        elif input_letter in "_V":
+#          if input_letter in "_VERKANTING 0":
+#            doc.layers.add("TEXTLAYER", color=6)
+#          elif input_letter in "_VERKANTING 10":
+#            doc.layers.add("TEXTLAYER", color=6)
+#          elif input_letter in "_VERKANTING 20":
+#            doc.layers.add("TEXTLAYER", color=6)
+#          elif input_letter in "_VERKANTING 99":
+#            doc.layers.add("TEXTLAYER", color=6)
+#          else:
+#            doc.layers.add("TEXTLAYER", color=8)
+#        else:
+#          doc.layers.add("TEXTLAYER", color=6)
+#      else:
+#        doc.layers.add("TEXTLAYER", color=30) )
+#doc.saveas((str(input_letter)+'.dxf'))
+
+#def DXFcreatorText():
+msp.add_text( # add text to the document
+    "Test", 
+    dxfattribs={
+        "layer": "TEXTLAYER",
+        "color": 2,
+        "style": "Verdana"
+    }).set_pos((0, 0.2), align="CENTER")
+
+#def DXFcreatorCircle(X,Y,Z,name,input_letter):
+msp.add_circle(center=[20, 20], radius=10, dxfattribs={"layer": "TEXTLAYER"}) # add a circle
+msp.add_point([25, 25], dxfattribs={'layer': 'MyLine1'}) # add a point
+
+doc.saveas('test.dxf') # save lines, circles and text in one dxf file
